@@ -44,6 +44,53 @@ public final class AudioRouter {
         }
     }
 
+    public static final String ADB_COMMAND =
+            "pkill -f com.pengatur.suara.ShellDaemon; "
+            + "CLASSPATH=$(pm path com.pengatur.suara | cut -d: -f2) setsid app_process /system/bin "
+            + "com.pengatur.suara.ShellDaemon > /dev/null 2>&1 < /dev/null &";
+
+    /** Menulis pilihan ke file yang dibaca mode ADB (ShellDaemon). */
+    public static void writeDaemonMode(Context c, int value) {
+        try {
+            java.io.File dir = c.getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "mode.txt"), false);
+            w.write(String.valueOf(value));
+            w.close();
+        } catch (Exception ignored) { }
+    }
+
+    /** Menerapkan pilihan: lewat mode ADB (bila berjalan) dan langsung (bila HP mengizinkan). */
+    public static boolean applyAll(Context c, int mode) {
+        writeDaemonMode(c, forceValueFor(mode));
+        return apply(mode);
+    }
+
+    public static void stopDaemon(Context c) {
+        writeDaemonMode(c, -99);
+    }
+
+    /** Detik sejak mode ADB terakhir aktif, atau -1 bila tidak terbaca. */
+    public static long daemonAgeSeconds(Context c) {
+        try {
+            java.io.File dir = c.getExternalFilesDir(null);
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.FileReader(new java.io.File(dir, "daemon.txt")));
+            String s = br.readLine();
+            br.close();
+            long t = Long.parseLong(s.trim().split(" ")[0]);
+            if (t == 0) return -1;
+            return (System.currentTimeMillis() - t) / 1000;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    public static boolean isDaemonAlive(Context c) {
+        long age = daemonAgeSeconds(c);
+        return age >= 0 && age < 5;
+    }
+
     /** Menerapkan mode. Mengembalikan true bila sistem menerima perintah. */
     public static boolean apply(int mode) {
         try {

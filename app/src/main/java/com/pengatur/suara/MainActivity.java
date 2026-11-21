@@ -24,6 +24,8 @@ import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,6 +34,7 @@ public class MainActivity extends Activity {
 
     private TextView statusText;
     private TextView warningText;
+    private TextView adbStatusText;
     private RadioGroup modeGroup;
     private Switch lockSwitch;
     private AudioManager am;
@@ -52,15 +55,18 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         }
         if (AudioRouter.isLocked(this)) LockService.start(this);
+        AudioRouter.writeDaemonMode(this, AudioRouter.forceValueFor(AudioRouter.getMode(this)));
     }
 
     @Override protected void onResume() {
         super.onResume();
         am.registerAudioDeviceCallback(deviceCallback, handler);
         refresh();
+        handler.postDelayed(statusTicker, 2000);
     }
 
     @Override protected void onPause() {
+        handler.removeCallbacks(statusTicker);
         am.unregisterAudioDeviceCallback(deviceCallback);
         super.onPause();
     }
@@ -137,6 +143,45 @@ public class MainActivity extends Activity {
         lockHint.setTextColor(Color.GRAY);
         root.addView(lockHint);
 
+        root.addView(header("Mode ADB (iADB / Shizuku)"));
+        adbStatusText = new TextView(this);
+        adbStatusText.setTextSize(15);
+        root.addView(adbStatusText);
+
+        TextView adbHelp = new TextView(this);
+        adbHelp.setText("HP Anda butuh izin ADB untuk memindahkan suara. Caranya:\n"
+                + "1. Ketuk \"Salin perintah\".\n"
+                + "2. Buka iADB, sambungkan, lalu tempel perintah di terminal dan jalankan.\n"
+                + "3. Kembali ke sini: status akan berubah jadi aktif.\n"
+                + "Ulangi setiap kali HP restart.");
+        adbHelp.setTextSize(13);
+        adbHelp.setTextColor(Color.GRAY);
+        adbHelp.setPadding(0, dp(4), 0, dp(4));
+        root.addView(adbHelp);
+
+        TextView cmd = new TextView(this);
+        cmd.setText(AudioRouter.ADB_COMMAND);
+        cmd.setTextIsSelectable(true);
+        cmd.setTypeface(Typeface.MONOSPACE);
+        cmd.setTextSize(12);
+        cmd.setBackgroundColor(Color.argb(40, 128, 128, 128));
+        cmd.setPadding(dp(8), dp(8), dp(8), dp(8));
+        root.addView(cmd);
+
+        root.addView(button("📋  Salin perintah", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("perintah", AudioRouter.ADB_COMMAND));
+                Toast.makeText(MainActivity.this, "Perintah disalin", Toast.LENGTH_SHORT).show();
+            }
+        }));
+        root.addView(button("⏹  Hentikan mode ADB", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                AudioRouter.stopDaemon(MainActivity.this);
+                handler.postDelayed(new Runnable() { @Override public void run() { refresh(); } }, 1500);
+            }
+        }));
+
         root.addView(header("Alat bantu"));
         root.addView(button("🔊  Tes suara", new View.OnClickListener() {
             @Override public void onClick(View v) { playTestTone(); }
@@ -166,8 +211,33 @@ public class MainActivity extends Activity {
         }
         if (AudioRouter.isLocked(this)) state += "\n🔒 Kunci output menyala";
         statusText.setText(state);
+        updateAdbStatus();
         buildOutputList();
     }
+
+    private void updateAdbStatus() {
+        if (AudioRouter.isDaemonAlive(this)) {
+            adbStatusText.setText("🟢 Mode ADB berjalan");
+        } else if (AudioRouter.daemonAgeSeconds(this) >= 0) {
+            adbStatusText.setText("🔴 Mode ADB berhenti (HP restart atau dihentikan). Jalankan lagi perintahnya.");
+        } else {
+            adbStatusText.setText("⚪ Mode ADB belum dijalankan");
+        }
+    }
+
+    private final Runnable statusTicker = new Runnable() {
+        @Override public void run() {
+            updateAdbStatus();
+            int mode = AudioRouter.getMode(MainActivity.this);
+            if (AudioRouter.currentForce() >= 0) {
+                String s = (AudioRouter.isApplied(mode) ? "✅ Aktif: " : "⏳ Belum diterapkan: ")
+                        + AudioRouter.modeName(mode);
+                if (AudioRouter.isLocked(MainActivity.this)) s += "\n🔒 Kunci output menyala";
+                statusText.setText(s);
+            }
+            handler.postDelayed(this, 2000);
+        }
+    };
 
     /** Membangun ulang daftar output dari perangkat yang sedang terdeteksi. */
     private void buildOutputList() {
@@ -226,12 +296,21 @@ public class MainActivity extends Activity {
     private void choose(String key, int mode) {
         AudioRouter.setChoice(this, key);
         AudioRouter.setMode(this, mode);
-        if (!AudioRouter.apply(mode)) {
-            Toast.makeText(this, "Gagal: " + AudioRouter.lastError, Toast.LENGTH_LONG).show();
-        }
+        final int m = mode;
+        AudioRouter.applyAll(this, mode);
         if (AudioRouter.isLocked(this)) LockService.start(this);
-        // Beri waktu sistem memindahkan suara, lalu perbarui tanda "sedang dipakai".
-        handler.postDelayed(new Runnable() { @Override public void run() { refresh(); } }, 300);
+        refresh();
+        // Mode ADB membaca pilihan tiap 1 detik; cek hasilnya setelah itu.
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                refresh();
+                if (!AudioRouter.isApplied(m)) {
+                    Toast.makeText(MainActivity.this,
+                            "HP menolak. Jalankan Mode ADB lewat iADB (lihat bagian bawah).",
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        }, 1800);
     }
 
     private static String icon(int t) {

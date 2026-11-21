@@ -77,7 +77,7 @@ public class LockService extends Service {
 
     private void reapply() {
         int mode = AudioRouter.getMode(this);
-        if (!AudioRouter.isApplied(mode)) AudioRouter.apply(mode);
+        if (!AudioRouter.isApplied(mode)) AudioRouter.applyAll(this, mode);
     }
 
     private Notification buildNotification() {

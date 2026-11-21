@@ -8,7 +8,7 @@ import android.content.Intent;
 public class BootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context c, Intent intent) {
         if (AudioRouter.isLocked(c)) {
-            AudioRouter.apply(AudioRouter.getMode(c));
+            AudioRouter.applyAll(c, AudioRouter.getMode(c));
             try { LockService.start(c); } catch (Exception ignored) { }
         }
     }
