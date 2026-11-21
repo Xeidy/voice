@@ -4,12 +4,15 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -17,8 +20,19 @@ jobs:
         with:
           gradle-version: '8.7'
       - name: Build APK
-        run: gradle assembleRelease --no-daemon
+        run: |
+          gradle assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk PengaturSuara.apk
       - uses: actions/upload-artifact@v4
         with:
           name: PengaturSuara-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: PengaturSuara.apk
+      - name: Terbitkan di Releases
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Pengatur Suara (build terbaru)
+          body: Unduh PengaturSuara.apk di bawah, lalu pasang di HP.
+          files: PengaturSuara.apk
+          make_latest: true
