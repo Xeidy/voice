@@ -92,6 +92,92 @@ public final class AudioRouter {
         }
     }
 
+    // ---- Pilihan perangkat di daftar output ----
+    private static final String KEY_CHOICE = "pilihan";
+    public static String getChoice(Context c) { return prefs(c).getString(KEY_CHOICE, "auto"); }
+    public static void setChoice(Context c, String v) { prefs(c).edit().putString(KEY_CHOICE, v).apply(); }
+
+    /** Apakah tipe perangkat ini bisa dipakai untuk suara media. */
+    public static boolean isMediaOutput(int t) {
+        switch (t) {
+            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER:
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+            case AudioDeviceInfo.TYPE_USB_ACCESSORY:
+            case AudioDeviceInfo.TYPE_HDMI:
+            case AudioDeviceInfo.TYPE_LINE_ANALOG:
+            case AudioDeviceInfo.TYPE_LINE_DIGITAL:
+            case AudioDeviceInfo.TYPE_DOCK:
+            case AudioDeviceInfo.TYPE_AUX_LINE:
+            case 23: case 26: case 27:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    public static boolean isBluetooth(int t) {
+        return t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || t == 23 || t == 26 || t == 27;
+    }
+
+    public static boolean isWired(int t) {
+        return t == AudioDeviceInfo.TYPE_WIRED_HEADPHONES || t == AudioDeviceInfo.TYPE_WIRED_HEADSET;
+    }
+
+    /** Mode routing yang membuat suara keluar ke tipe perangkat ini. */
+    public static int modeForType(int t) {
+        if (t == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) return MODE_SPEAKER;
+        if (isWired(t)) return MODE_HEADPHONE;
+        if (isBluetooth(t)) return MODE_AUTO;      // Bluetooth sudah jadi prioritas utama bawaan
+        return MODE_NO_BLUETOOTH;                  // USB/HDMI/line: lewati Bluetooth
+    }
+
+    /** Daftar output media yang terdeteksi, tanpa duplikat. Speaker HP selalu ada. */
+    public static java.util.List<AudioDeviceInfo> mediaOutputs(Context c) {
+        AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+        java.util.List<AudioDeviceInfo> list = new java.util.ArrayList<AudioDeviceInfo>();
+        java.util.Set<String> seen = new java.util.HashSet<String>();
+        for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+            if (!isMediaOutput(d.getType())) continue;
+            String key = d.getType() + ":" + d.getProductName();
+            if (seen.add(key)) list.add(d);
+        }
+        return list;
+    }
+
+    /** Perkiraan tipe perangkat yang sedang mengeluarkan suara media. */
+    public static int guessActiveType(java.util.List<AudioDeviceInfo> devs) {
+        int force = currentForce();
+        int bt = -1, usb = -1, wired = -1, other = -1;
+        for (AudioDeviceInfo d : devs) {
+            int t = d.getType();
+            if (isBluetooth(t)) { if (bt < 0) bt = t; }
+            else if (t == AudioDeviceInfo.TYPE_USB_HEADSET || t == AudioDeviceInfo.TYPE_USB_DEVICE) usb = t;
+            else if (isWired(t)) wired = t;
+            else if (t != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) other = t;
+        }
+        if (force == FORCE_SPEAKER) return AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
+        if (force == FORCE_HEADPHONES && wired >= 0) return wired;
+        if (force != FORCE_NO_BT_A2DP && bt >= 0) return bt;
+        if (usb >= 0) return usb;
+        if (wired >= 0) return wired;
+        if (other >= 0) return other;
+        return AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
+    }
+
+    public static String deviceLabel(AudioDeviceInfo d) {
+        String name = d.getProductName() == null ? "" : d.getProductName().toString().trim();
+        String label = typeName(d.getType());
+        if (name.length() > 0 && !name.equals(android.os.Build.MODEL) && isBluetooth(d.getType())
+                || (name.length() > 0 && d.getType() == AudioDeviceInfo.TYPE_USB_HEADSET)) {
+            label += " — " + name;
+        }
+        return label;
+    }
+
     // ---- Daftar perangkat output yang dikira tersambung oleh HP ----
     public static String describeOutputs(Context c) {
         AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);

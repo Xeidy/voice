@@ -25,10 +25,13 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class MainActivity extends Activity {
 
     private TextView statusText;
-    private TextView devicesText;
+    private TextView warningText;
     private RadioGroup modeGroup;
     private Switch lockSwitch;
     private AudioManager am;
@@ -97,33 +100,21 @@ public class MainActivity extends Activity {
         statusText.setPadding(0, dp(8), 0, 0);
         root.addView(statusText);
 
-        root.addView(header("Keluarkan suara ke:"));
+        root.addView(header("Daftar output suara"));
+        TextView listHint = new TextView(this);
+        listHint.setText("Ketuk salah satu untuk mengeluarkan suara ke sana.");
+        listHint.setTextSize(13);
+        listHint.setTextColor(Color.GRAY);
+        root.addView(listHint);
+
         modeGroup = new RadioGroup(this);
-        int[] modes = {AudioRouter.MODE_AUTO, AudioRouter.MODE_SPEAKER,
-                AudioRouter.MODE_HEADPHONE, AudioRouter.MODE_NO_BLUETOOTH};
-        for (int m : modes) {
-            RadioButton rb = new RadioButton(this);
-            rb.setId(100 + m);
-            rb.setText(AudioRouter.modeName(m));
-            rb.setTextSize(16);
-            rb.setPadding(dp(4), dp(8), 0, dp(8));
-            modeGroup.addView(rb);
-        }
-        modeGroup.check(100 + AudioRouter.getMode(this));
-        modeGroup.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(RadioGroup g, int id) {
-                int mode = id - 100;
-                AudioRouter.setMode(MainActivity.this, mode);
-                boolean ok = AudioRouter.apply(mode);
-                if (!ok) {
-                    Toast.makeText(MainActivity.this,
-                            "Gagal: " + AudioRouter.lastError, Toast.LENGTH_LONG).show();
-                }
-                if (AudioRouter.isLocked(MainActivity.this)) LockService.start(MainActivity.this);
-                refresh();
-            }
-        });
         root.addView(modeGroup);
+
+        warningText = new TextView(this);
+        warningText.setTextSize(14);
+        warningText.setTextColor(Color.rgb(230, 120, 0));
+        warningText.setPadding(0, dp(6), 0, 0);
+        root.addView(warningText);
 
         lockSwitch = new Switch(this);
         lockSwitch.setText("Kunci output (cegah berganti sendiri)");
@@ -157,11 +148,6 @@ public class MainActivity extends Activity {
             @Override public void onClick(View v) { safeStart(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); }
         }));
 
-        root.addView(header("Perangkat output yang terdeteksi HP"));
-        devicesText = new TextView(this);
-        devicesText.setTextSize(15);
-        root.addView(devicesText);
-
         ScrollView sv = new ScrollView(this);
         sv.addView(root);
         return sv;
@@ -180,7 +166,82 @@ public class MainActivity extends Activity {
         }
         if (AudioRouter.isLocked(this)) state += "\n🔒 Kunci output menyala";
         statusText.setText(state);
-        devicesText.setText(AudioRouter.describeOutputs(this));
+        buildOutputList();
+    }
+
+    /** Membangun ulang daftar output dari perangkat yang sedang terdeteksi. */
+    private void buildOutputList() {
+        List<AudioDeviceInfo> devs = AudioRouter.mediaOutputs(this);
+        int active = AudioRouter.guessActiveType(devs);
+        String choice = AudioRouter.getChoice(this);
+
+        modeGroup.setOnCheckedChangeListener(null);
+        modeGroup.removeAllViews();
+        final List<String> keys = new ArrayList<String>();
+        final List<Integer> modes = new ArrayList<Integer>();
+
+        addRow("🔄  Otomatis (bawaan sistem)", null, "auto", AudioRouter.MODE_AUTO, keys, modes);
+
+        boolean fakeHeadset = false;
+        boolean activeMarked = false;
+        for (AudioDeviceInfo d : devs) {
+            int t = d.getType();
+            if (AudioRouter.isWired(t)) fakeHeadset = true;
+            String sub = null;
+            if (t == active && !activeMarked) { sub = "▶ sedang dipakai"; activeMarked = true; }
+            addRow(icon(t) + "  " + AudioRouter.deviceLabel(d), sub, "t" + t,
+                    AudioRouter.modeForType(t), keys, modes);
+        }
+
+        int checked = keys.indexOf(choice);
+        if (checked < 0) checked = 0;   // perangkat pilihan sudah terlepas
+        modeGroup.check(1000 + checked);
+
+        modeGroup.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(RadioGroup g, int id) {
+                int i = id - 1000;
+                if (i < 0 || i >= keys.size()) return;
+                choose(keys.get(i), modes.get(i));
+            }
+        });
+
+        warningText.setText(fakeHeadset
+                ? "⚠ HP mengira ada headphone/earphone kabel tersambung. Kalau tidak ada yang dicolok, "
+                  + "kemungkinan lubang jack kotor/lembap. Pilih \"Speaker HP\" dan nyalakan kunci output."
+                : "");
+    }
+
+    private void addRow(String title, String sub, String key, int mode,
+                        List<String> keys, List<Integer> modes) {
+        RadioButton rb = new RadioButton(this);
+        rb.setId(1000 + keys.size());
+        rb.setText(sub == null ? title : title + "\n" + sub);
+        rb.setTextSize(16);
+        rb.setPadding(dp(6), dp(10), 0, dp(10));
+        modeGroup.addView(rb);
+        keys.add(key);
+        modes.add(mode);
+    }
+
+    private void choose(String key, int mode) {
+        AudioRouter.setChoice(this, key);
+        AudioRouter.setMode(this, mode);
+        if (!AudioRouter.apply(mode)) {
+            Toast.makeText(this, "Gagal: " + AudioRouter.lastError, Toast.LENGTH_LONG).show();
+        }
+        if (AudioRouter.isLocked(this)) LockService.start(this);
+        // Beri waktu sistem memindahkan suara, lalu perbarui tanda "sedang dipakai".
+        handler.postDelayed(new Runnable() { @Override public void run() { refresh(); } }, 300);
+    }
+
+    private static String icon(int t) {
+        if (t == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) return "📱";
+        if (AudioRouter.isWired(t)) return "🎧";
+        if (AudioRouter.isBluetooth(t)) return "🔵";
+        if (t == AudioDeviceInfo.TYPE_USB_HEADSET || t == AudioDeviceInfo.TYPE_USB_DEVICE
+                || t == AudioDeviceInfo.TYPE_USB_ACCESSORY) return "🔌";
+        if (t == AudioDeviceInfo.TYPE_HDMI) return "📺";
+        return "🔈";
     }
 
     private void playTestTone() {
