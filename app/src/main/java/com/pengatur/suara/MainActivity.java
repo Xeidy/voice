@@ -26,6 +26,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.pm.PackageManager;
+
+import rikka.shizuku.Shizuku;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +59,22 @@ public class MainActivity extends Activity {
         }
         if (AudioRouter.isLocked(this)) LockService.start(this);
         AudioRouter.writeDaemonMode(this, AudioRouter.forceValueFor(AudioRouter.getMode(this)));
+        try { Shizuku.addRequestPermissionResultListener(permListener); } catch (Throwable ignored) { }
+        try { Shizuku.addBinderReceivedListenerSticky(binderListener); } catch (Throwable ignored) { }
+    }
+
+    private final Shizuku.OnBinderReceivedListener binderListener = new Shizuku.OnBinderReceivedListener() {
+        @Override public void onBinderReceived() {
+            handler.post(new Runnable() { @Override public void run() {
+                if (ShizukuHelper.granted()) activateAdb(false); else updateAdbStatus();
+            }});
+        }
+    };
+
+    @Override protected void onDestroy() {
+        try { Shizuku.removeRequestPermissionResultListener(permListener); } catch (Throwable ignored) { }
+        try { Shizuku.removeBinderReceivedListener(binderListener); } catch (Throwable ignored) { }
+        super.onDestroy();
     }
 
     @Override protected void onResume() {
@@ -63,6 +82,8 @@ public class MainActivity extends Activity {
         am.registerAudioDeviceCallback(deviceCallback, handler);
         refresh();
         handler.postDelayed(statusTicker, 2000);
+        // Nyalakan otomatis bila iADB sudah mengizinkan aplikasi ini.
+        if (ShizukuHelper.granted()) activateAdb(false);
     }
 
     @Override protected void onPause() {
@@ -149,36 +170,33 @@ public class MainActivity extends Activity {
         root.addView(adbStatusText);
 
         TextView adbHelp = new TextView(this);
-        adbHelp.setText("HP Anda butuh izin ADB untuk memindahkan suara. Caranya:\n"
-                + "1. Ketuk \"Salin perintah\".\n"
-                + "2. Buka iADB, sambungkan, lalu tempel perintah di terminal dan jalankan.\n"
-                + "3. Kembali ke sini: status akan berubah jadi aktif.\n"
-                + "Ulangi setiap kali HP restart.");
+        adbHelp.setText("HP Anda butuh izin ADB untuk memindahkan suara.\n"
+                + "1. Buka iADB dan pastikan layanannya menyala.\n"
+                + "2. Kembali ke sini, ketuk \"Aktifkan lewat iADB\", lalu izinkan.\n"
+                + "Setelah HP restart, nyalakan iADB lagi lalu ketuk tombol ini lagi.");
         adbHelp.setTextSize(13);
         adbHelp.setTextColor(Color.GRAY);
         adbHelp.setPadding(0, dp(4), 0, dp(4));
         root.addView(adbHelp);
 
-        TextView cmd = new TextView(this);
-        cmd.setText(AudioRouter.ADB_COMMAND);
-        cmd.setTextIsSelectable(true);
-        cmd.setTypeface(Typeface.MONOSPACE);
-        cmd.setTextSize(12);
-        cmd.setBackgroundColor(Color.argb(40, 128, 128, 128));
-        cmd.setPadding(dp(8), dp(8), dp(8), dp(8));
-        root.addView(cmd);
-
-        root.addView(button("📋  Salin perintah", new View.OnClickListener() {
+        root.addView(button("\u26A1  Aktifkan lewat iADB", new View.OnClickListener() {
+            @Override public void onClick(View v) { activateAdb(true); }
+        }));
+        root.addView(button("\u23F9  Hentikan mode ADB", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                AudioRouter.stopDaemon(MainActivity.this);
+                adbRunning = false;
+                new Thread(new Runnable() { @Override public void run() {
+                    if (ShizukuHelper.granted()) ShizukuHelper.stopDaemon();
+                }}).start();
+                handler.postDelayed(new Runnable() { @Override public void run() { refresh(); } }, 1500);
+            }
+        }));
+        root.addView(button("\uD83D\uDCCB  Salin perintah (untuk terminal ADB)", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
                 cm.setPrimaryClip(ClipData.newPlainText("perintah", AudioRouter.ADB_COMMAND));
                 Toast.makeText(MainActivity.this, "Perintah disalin", Toast.LENGTH_SHORT).show();
-            }
-        }));
-        root.addView(button("⏹  Hentikan mode ADB", new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                AudioRouter.stopDaemon(MainActivity.this);
-                handler.postDelayed(new Runnable() { @Override public void run() { refresh(); } }, 1500);
             }
         }));
 
@@ -216,14 +234,63 @@ public class MainActivity extends Activity {
     }
 
     private void updateAdbStatus() {
-        if (AudioRouter.isDaemonAlive(this)) {
-            adbStatusText.setText("🟢 Mode ADB berjalan");
-        } else if (AudioRouter.daemonAgeSeconds(this) >= 0) {
-            adbStatusText.setText("🔴 Mode ADB berhenti (HP restart atau dihentikan). Jalankan lagi perintahnya.");
+        if (adbRunning || AudioRouter.isDaemonAlive(this)) {
+            adbStatusText.setText("\uD83D\uDFE2 Mode ADB berjalan");
+        } else if (adbStarting) {
+            adbStatusText.setText("\u23F3 Menyalakan Mode ADB...");
+        } else if (!ShizukuHelper.available()) {
+            adbStatusText.setText("\u26AA iADB belum menyala. Buka iADB, nyalakan layanannya, lalu kembali ke sini.");
+        } else if (!ShizukuHelper.granted()) {
+            adbStatusText.setText("\uD83D\uDFE1 iADB menyala. Ketuk \"Aktifkan lewat iADB\" lalu izinkan.");
         } else {
-            adbStatusText.setText("⚪ Mode ADB belum dijalankan");
+            adbStatusText.setText("\uD83D\uDD34 Mode ADB belum berjalan. Ketuk \"Aktifkan lewat iADB\".");
         }
     }
+
+    private volatile boolean adbRunning = false;
+    private volatile boolean adbStarting = false;
+
+    /** Minta izin iADB bila perlu, lalu nyalakan Mode ADB. */
+    private void activateAdb(boolean userTapped) {
+        if (!ShizukuHelper.available()) {
+            if (userTapped) Toast.makeText(this,
+                    "iADB belum menyala. Buka iADB dan nyalakan layanannya dulu.", Toast.LENGTH_LONG).show();
+            updateAdbStatus();
+            return;
+        }
+        if (!ShizukuHelper.granted()) {
+            if (userTapped) ShizukuHelper.requestPermission();
+            updateAdbStatus();
+            return;
+        }
+        if (adbStarting) return;
+        adbStarting = true;
+        updateAdbStatus();
+        final boolean tapped = userTapped;
+        new Thread(new Runnable() { @Override public void run() {
+            final boolean already = !tapped && ShizukuHelper.isDaemonRunning();
+            final String err = already ? null : ShizukuHelper.startDaemon();
+            runOnUiThread(new Runnable() { @Override public void run() {
+                adbStarting = false;
+                adbRunning = (err == null);
+                if (tapped) Toast.makeText(MainActivity.this,
+                        err == null ? "Mode ADB aktif \u2705 Sekarang pilih output di daftar."
+                                    : "Gagal: " + err, Toast.LENGTH_LONG).show();
+                refresh();
+            }});
+        }}).start();
+    }
+
+    private final Shizuku.OnRequestPermissionResultListener permListener =
+            new Shizuku.OnRequestPermissionResultListener() {
+        @Override public void onRequestPermissionResult(int code, int result) {
+            if (code == ShizukuHelper.REQUEST_CODE && result == PackageManager.PERMISSION_GRANTED) {
+                activateAdb(true);
+            } else if (code == ShizukuHelper.REQUEST_CODE) {
+                Toast.makeText(MainActivity.this, "Izin iADB ditolak", Toast.LENGTH_SHORT).show();
+            }
+        }
+    };
 
     private final Runnable statusTicker = new Runnable() {
         @Override public void run() {
@@ -306,7 +373,7 @@ public class MainActivity extends Activity {
                 refresh();
                 if (!AudioRouter.isApplied(m)) {
                     Toast.makeText(MainActivity.this,
-                            "HP menolak. Jalankan Mode ADB lewat iADB (lihat bagian bawah).",
+                            "HP menolak. Ketuk \"Aktifkan lewat iADB\" di bagian bawah.",
                             Toast.LENGTH_LONG).show();
                 }
             }

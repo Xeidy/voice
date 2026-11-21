@@ -55,7 +55,22 @@ public class LockService extends Service {
         super.onCreate();
         am = (AudioManager) getSystemService(AUDIO_SERVICE);
         am.registerAudioDeviceCallback(deviceCallback, handler);
+        // Setelah HP restart: begitu iADB dinyalakan lagi, Mode ADB ikut menyala otomatis.
+        try { rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(binderListener); } catch (Throwable ignored) { }
     }
+
+    private final rikka.shizuku.Shizuku.OnBinderReceivedListener binderListener =
+            new rikka.shizuku.Shizuku.OnBinderReceivedListener() {
+        @Override public void onBinderReceived() {
+            new Thread(new Runnable() { @Override public void run() {
+                if (ShizukuHelper.granted() && !ShizukuHelper.isDaemonRunning()) {
+                    AudioRouter.writeDaemonMode(LockService.this,
+                            AudioRouter.forceValueFor(AudioRouter.getMode(LockService.this)));
+                    ShizukuHelper.startDaemon();
+                }
+            }}).start();
+        }
+    };
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         Notification n = buildNotification();
@@ -103,6 +118,7 @@ public class LockService extends Service {
     @Override public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         am.unregisterAudioDeviceCallback(deviceCallback);
+        try { rikka.shizuku.Shizuku.removeBinderReceivedListener(binderListener); } catch (Throwable ignored) { }
         super.onDestroy();
     }
 

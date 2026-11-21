@@ -45,7 +45,7 @@ public final class AudioRouter {
     }
 
     public static final String ADB_COMMAND =
-            "pkill -f com.pengatur.suara.ShellDaemon; "
+            "pkill -f 'com.pengatur.suara.ShellDaem[o]n'; "
             + "CLASSPATH=$(pm path com.pengatur.suara | cut -d: -f2) setsid app_process /system/bin "
             + "com.pengatur.suara.ShellDaemon > /dev/null 2>&1 < /dev/null &";
 
